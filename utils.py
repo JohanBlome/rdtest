@@ -112,6 +112,21 @@ def ffmpeg_run(params, debug=0):
     return run(cmd, debug=debug)
 
 
+def get_packetbased_duration(infile, debug=0):
+    duration = 0
+    data = ffprobe_run("packet=pts_time,duration_time", infile, debug)
+    match = re.search(r"(?P<pts>[0-9.]*)x(?P<duration>[0-9.]*)$", data)
+    if match:
+        pts = match.group("pts")
+        duration = float(match.group("duration")) + float(pts)
+
+    return duration
+
+
+def get_codec_name(infile, debug=0):
+    return ffprobe_run("stream=codec_name", infile, debug)
+
+
 def get_resolution(infile, debug=0):
     return ffprobe_run("stream=width,height", infile, debug)
 
@@ -126,13 +141,23 @@ def get_framerate(infile, debug=0):
 
 def get_duration(infile, debug=0):
     # "stream=duration" fails on webm files
-    return ffprobe_run("format=duration", infile, debug)
+    in_duration_secs = ffprobe_run("format=duration", infile, 1)
+    if in_duration_secs == "N/A":
+        in_duration_secs = get_packetbased_duration(infile)
+    if in_duration_secs == 0:
+        return 0
+    return in_duration_secs
 
 
 # returns bitrate in kbps
 def get_bitrate(infile):
     size_bytes = os.stat(infile).st_size
     in_duration_secs = get_duration(infile)
+    # ?
+    if in_duration_secs == "N/A":
+        in_duration_secs = get_packetbased_duration(infile)
+    if in_duration_secs == 0:
+        return 0
     actual_bitrate = 8.0 * size_bytes / float(in_duration_secs)
     return actual_bitrate
 
@@ -270,6 +295,7 @@ def ffmpeg_supports_libvmaf(debug):
     ffmpeg_params = [
         "-filters",
     ]
+
     retcode, stdout, stderr, _ = ffmpeg_run(ffmpeg_params, debug)
     assert retcode == 0, stderr
     for line in stdout.decode("ascii").splitlines():
@@ -285,8 +311,6 @@ def check_software(debug):
 
 
 def get_vmaf(distorted_filename, ref_filename, vmaf_json, debug):
-    global VMAF_MODEL
-
     vmaf_json = (
         vmaf_json
         if vmaf_json is not None
@@ -306,28 +330,32 @@ def get_vmaf(distorted_filename, ref_filename, vmaf_json, debug):
             f"\n***\nwarn: cannot find VMAF model {VMAF_MODEL}. Using default model\n***"
         )
 
+    # check duration and only do the same length as the encoded video
+    duration = get_duration(distorted_filename, debug)
+
     ffmpeg_params = [
         "-i",
         distorted_filename,
         "-i",
         ref_filename,
         "-lavfi",
-        f"libvmaf=model=path={VMAF_MODEL}:log_fmt=json:log_path={vmaf_json}",
+        f"libvmaf=n_threads=8:model=path={VMAF_MODEL}:log_fmt=json:log_path={vmaf_json}",
+        "-t",
+        duration,
         "-f",
         "null",
         "-",
     ]
-    retcode, _, stderr, _ = ffmpeg_run(ffmpeg_params, debug)
+    retcode, _, stderr, _ = ffmpeg_run(ffmpeg_params, 1)
     assert retcode == 0, stderr
-    return parse_vmaf_output(vmaf_json, VMAF_MODEL)
+    return parse_vmaf_output(vmaf_json)
 
 
-def parse_vmaf_output(vmaf_json, vmaf_model):
+def parse_vmaf_output(vmaf_json):
     """Parse log/output files and return quality score"""
     with open(vmaf_json) as fd:
         data = json.load(fd)
     vmaf_dict = {
-        "model": os.path.basename(vmaf_model),
         "mean": data["pooled_metrics"]["vmaf"]["mean"],
         "harmonic_mean": data["pooled_metrics"]["vmaf"]["harmonic_mean"],
     }
