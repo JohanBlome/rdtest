@@ -130,7 +130,7 @@ def run_experiment(options):
 
             match = re.search(f"qp(?P<qp>[0-9]*)", rest)
             qp = match.group("qp")
-            match = re.findall(r"(?P<fps>[0-9]*)fps", source)
+            match = re.findall(r"(?P<fps>[0-9.]*)fps", source)
             fps = match[-1]
             ref_path = f"media/{source}"
             codec = utils.get_codec_name(infile)
